@@ -2141,20 +2141,30 @@ void SDL_UnbindAudioStreams(SDL_AudioStream * const *streams, int num_streams)
         while (true) {
             SDL_LockMutex(stream->lock);   // lock to check this and then release it, in case the device isn't locked yet.
             SDL_LogicalAudioDevice *bounddev = stream->bound_device;
+            SDL_AudioDevice *physical_device = bounddev ? (SDL_AudioDevice *) SDL_GetAtomicPointer((void **) &bounddev->physical_device) : NULL;
+            if (physical_device) {
+                RefPhysicalAudioDevice(physical_device);
+            }
             SDL_UnlockMutex(stream->lock);
 
             // lock in correct order.
-            if (bounddev) {
-                SDL_LockMutex(bounddev->physical_device->lock);  // this requires recursive mutexes, since we're likely locking the same device multiple times.
+            if (physical_device) {
+                SDL_LockMutex(physical_device->lock);  // this requires recursive mutexes, since we're likely locking the same device multiple times.
             }
             SDL_LockMutex(stream->lock);
 
-            if (bounddev == stream->bound_device) {
+            // Migration keeps the logical binding but changes its physical device.
+            if (bounddev == stream->bound_device && (!bounddev || physical_device == bounddev->physical_device)) {
+                if (physical_device) {
+                    // The locked logical binding retains its own device reference.
+                    UnrefPhysicalAudioDevice(physical_device);
+                }
                 break;  // the binding didn't change in the small window where it could, so we're good.
             } else {
                 SDL_UnlockMutex(stream->lock);  // it changed bindings! Try again.
-                if (bounddev) {
-                    SDL_UnlockMutex(bounddev->physical_device->lock);
+                if (physical_device) {
+                    SDL_UnlockMutex(physical_device->lock);
+                    UnrefPhysicalAudioDevice(physical_device);
                 }
             }
         }
